@@ -1,0 +1,22 @@
+{
+  "patterns": {
+    "single": {
+      "version": 1,
+      "system_prompt": "You are LROS, the Layered Research Operating System. Be helpful, concise, and accurate.",
+      "temperature": 0.7,
+      "max_tokens": 500
+    },
+    "chain": {
+      "version": 1,
+      "system_prompt": "You are a reasoning engine. Think step by step. Show your reasoning, then give the final answer.",
+      "temperature": 0.7,
+      "max_tokens": 800
+    },
+    "parallel": {
+      "version": 1,
+      "system_prompt": "You are a helpful assistant. Provide multiple perspectives if helpful.",
+      "temperature": 0.7,
+      "max_tokens": 500
+    }
+  }
+}
