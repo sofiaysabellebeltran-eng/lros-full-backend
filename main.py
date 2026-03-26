@@ -1,4 +1,4 @@
-# main.py - LROS Full Backend with Robot Control
+# main.py - LROS Full Backend with Gemini Support
 
 from fastapi import FastAPI, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
@@ -30,7 +30,7 @@ from robot_abstraction import (
 )
 from robot_safety import check_safety, log_safety_violation, get_safety_summary
 
-app = FastAPI(title="LROS Constitutional Backend with Robot Control")
+app = FastAPI(title="LROS Constitutional Backend with Gemini")
 
 app.add_middleware(
     CORSMiddleware,
@@ -45,7 +45,7 @@ app.add_middleware(
 class ChatRequest(BaseModel):
     message: str
     pattern: str = "auto"
-    model: str = "deepseek"
+    model: str = "deepseek"  # Options: deepseek, gemini
     session_id: str = None
     user_id: str = "anonymous"
 
@@ -54,6 +54,7 @@ class ChatResponse(BaseModel):
     row_index: int = None
     pattern_used: str = None
     ab_variant: str = None
+    model_used: str = None
 
 class FeedbackRequest(BaseModel):
     row_index: int
@@ -75,10 +76,14 @@ class ABExposureRequest(BaseModel):
 
 # ========== API KEYS ==========
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 ADMIN_API_KEY = os.getenv("ADMIN_API_KEY", "lros-admin-2026")
 EVOLUTION_API_KEY = os.getenv("EVOLUTION_API_KEY", "lros-evolve-2026")
 
+# ========== AI MODEL CALLS ==========
+
 async def call_deepseek(messages):
+    """Call DeepSeek API"""
     async with httpx.AsyncClient() as client:
         response = await client.post(
             "https://api.deepseek.com/v1/chat/completions",
@@ -95,13 +100,52 @@ async def call_deepseek(messages):
         data = response.json()
         return data["choices"][0]["message"]["content"]
 
+async def call_gemini(prompt):
+    """Call Gemini API"""
+    if not GEMINI_API_KEY:
+        return "Gemini API key not configured. Please add GEMINI_API_KEY to environment variables."
+    
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key={GEMINI_API_KEY}",
+                json={
+                    "contents": [{
+                        "parts": [{"text": prompt}]
+                    }],
+                    "generationConfig": {
+                        "temperature": 0.7,
+                        "maxOutputTokens": 500
+                    }
+                }
+            )
+            data = response.json()
+            
+            if "candidates" in data and len(data["candidates"]) > 0:
+                return data["candidates"][0]["content"]["parts"][0]["text"]
+            else:
+                return f"Error: {data.get('error', {}).get('message', 'Unknown error')}"
+    except Exception as e:
+        return f"Error calling Gemini: {str(e)}"
+
+async def call_gemini_with_messages(messages):
+    """Call Gemini with message history (converted to simple prompt)"""
+    # Convert messages to a single prompt
+    prompt = ""
+    for msg in messages:
+        role = "User" if msg["role"] == "user" else "Assistant"
+        prompt += f"{role}: {msg['content']}\n"
+    prompt += "Assistant: "
+    return await call_gemini(prompt)
+
 # ========== ENDPOINTS ==========
 
 @app.get("/")
 async def root():
     return {
-        "message": "LROS Constitutional Backend with Robot Control",
+        "message": "LROS Constitutional Backend with Gemini",
         "patterns": get_pattern_list(),
+        "models": ["deepseek", "gemini"],
         "bandit_active": True,
         "governance_active": True,
         "robot_active": True
@@ -302,16 +346,18 @@ async def robot_simulate(robot_id: str, duration: int = 10):
 async def robot_safety_summary():
     return get_safety_summary()
 
-# ========== MAIN CHAT ENDPOINT ==========
+# ========== MAIN CHAT ENDPOINT WITH GEMINI SUPPORT ==========
 
 @app.post("/api/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
+    # Check system operational (governance)
     operational, message = can_process_request()
     if not operational:
         return ChatResponse(
             response=f"⚠️ {message}. System cannot process requests.",
             row_index=None,
-            pattern_used=None
+            pattern_used=None,
+            model_used=None
         )
     
     session_id = request.session_id or str(uuid.uuid4())
@@ -332,6 +378,7 @@ async def chat(request: ChatRequest):
     else:
         pattern = request.pattern
     
+    # Constitutional check with breach recording
     if is_meta_question(request.message):
         record_constitutional_breach(request.message, request.user_id)
         response_text = get_constitutional_response()
@@ -339,7 +386,7 @@ async def chat(request: ChatRequest):
             session_id, request.message, pattern, 
             request.model, response_text, rating=0
         )
-        return ChatResponse(response=response_text, row_index=row_index, pattern_used=pattern, ab_variant=ab_variant)
+        return ChatResponse(response=response_text, row_index=row_index, pattern_used=pattern, ab_variant=ab_variant, model_used=request.model)
     
     pattern_config = get_pattern(pattern)
     
@@ -349,21 +396,28 @@ async def chat(request: ChatRequest):
     ]
     
     try:
-        if request.model == "deepseek" and DEEPSEEK_API_KEY:
+        # Route to appropriate model based on user selection
+        if request.model == "gemini":
+            ai_response = await call_gemini_with_messages(messages)
+            model_used = "gemini"
+        elif request.model == "deepseek" and DEEPSEEK_API_KEY:
             ai_response = await call_deepseek(messages)
+            model_used = "deepseek"
         else:
-            ai_response = f"Model {request.model} not configured."
+            ai_response = f"Model {request.model} not configured. Please check API keys."
+            model_used = request.model
         
         row_index = log_interaction(
             session_id, request.message, pattern,
-            request.model, ai_response
+            model_used, ai_response
         )
         
         return ChatResponse(
             response=ai_response, 
             row_index=row_index, 
             pattern_used=pattern,
-            ab_variant=ab_variant
+            ab_variant=ab_variant,
+            model_used=model_used
         )
         
     except Exception as e:
@@ -372,7 +426,7 @@ async def chat(request: ChatRequest):
             session_id, request.message, pattern,
             request.model, error_msg
         )
-        return ChatResponse(response=error_msg, row_index=row_index, pattern_used=pattern, ab_variant=ab_variant)
+        return ChatResponse(response=error_msg, row_index=row_index, pattern_used=pattern, ab_variant=ab_variant, model_used=request.model)
 
 @app.post("/api/feedback")
 async def feedback(request: FeedbackRequest):
