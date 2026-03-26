@@ -1,4 +1,4 @@
-# main.py - LROS Full Backend with Multi-Armed Bandit and Swarm Reporting
+# main.py - LROS Full Backend with Personas & Implicit Feedback
 
 from fastapi import FastAPI, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
@@ -8,16 +8,15 @@ import httpx
 import uuid
 from datetime import datetime
 
-# Import LROS modules
 from constitution import is_meta_question, get_constitutional_response
 from audit import log_interaction, update_feedback
 from pattern_manager import get_pattern, get_pattern_list
 from evolution_engine import run_evolution_dry
 from bandit import select_pattern, update_bandit, get_bandit_stats, report_to_hub
+from persona import get_persona, update_persona
 
-app = FastAPI(title="LROS Constitutional Backend with Bandit")
+app = FastAPI(title="LROS Constitutional Backend")
 
-# CORS - Allow frontend to call
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -30,9 +29,10 @@ app.add_middleware(
 
 class ChatRequest(BaseModel):
     message: str
-    pattern: str = "single"
+    pattern: str = "auto"
     model: str = "deepseek"
     session_id: str = None
+    user_id: str = "anonymous"
 
 class ChatResponse(BaseModel):
     response: str
@@ -44,13 +44,18 @@ class FeedbackRequest(BaseModel):
     rating: int
     feedback_text: str = ""
     pattern_used: str = None
+    user_id: str = "anonymous"
+
+class ImplicitFeedbackRequest(BaseModel):
+    user_id: str = "anonymous"
+    action: str
+    duration: int = 0
 
 # ========== API KEYS ==========
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
 ADMIN_API_KEY = os.getenv("ADMIN_API_KEY", "lros-admin-2026")
 EVOLUTION_API_KEY = os.getenv("EVOLUTION_API_KEY", "lros-evolve-2026")
 
-# ========== DEEPSEEK CALL ==========
 async def call_deepseek(messages):
     async with httpx.AsyncClient() as client:
         response = await client.post(
@@ -73,7 +78,7 @@ async def call_deepseek(messages):
 @app.get("/")
 async def root():
     return {
-        "message": "LROS Constitutional Backend with Bandit",
+        "message": "LROS Constitutional Backend with Personas",
         "patterns": get_pattern_list(),
         "bandit_active": True
     }
@@ -94,11 +99,19 @@ async def bandit_stats():
 async def chat(request: ChatRequest):
     session_id = request.session_id or str(uuid.uuid4())
     
+    # Get user persona
+    persona = get_persona(request.user_id)
+    
+    # Pattern selection with persona influence
     if request.pattern == "auto":
-        pattern = select_pattern()
+        if persona["preferred_pattern"] != "auto" and persona["interactions"] > 5:
+            pattern = persona["preferred_pattern"]
+        else:
+            pattern = select_pattern()
     else:
         pattern = request.pattern
     
+    # Constitutional check
     if is_meta_question(request.message):
         response_text = get_constitutional_response()
         row_index = log_interaction(
@@ -146,8 +159,15 @@ async def feedback(request: FeedbackRequest):
     if request.pattern_used:
         reward = 1 if request.rating == 1 else 0
         update_bandit(request.pattern_used, reward)
+        update_persona(request.user_id, request.rating, request.pattern_used)
     
     return {"status": "ok" if success else "error"}
+
+@app.post("/api/implicit-feedback")
+async def implicit_feedback(request: ImplicitFeedbackRequest):
+    """Track implicit feedback (dwell time, copy, etc.)"""
+    print(f"Implicit: {request.user_id} - {request.action} - {request.duration}ms")
+    return {"status": "ok"}
 
 @app.post("/api/evolution/dry")
 async def evolution_dry(x_api_key: str = Header(...)):
@@ -174,9 +194,13 @@ async def reset_bandit(x_api_key: str = Header(...)):
 
 @app.post("/api/report-to-hub")
 async def trigger_report():
-    """Manually trigger reporting to swarm hub"""
     result = await report_to_hub()
     if result:
         return {"status": "ok", "message": "Report sent to swarm hub"}
     else:
         return {"status": "error", "message": "Failed to send report"}
+
+@app.get("/api/persona/{user_id}")
+async def get_user_persona(user_id: str):
+    persona = get_persona(user_id)
+    return persona
