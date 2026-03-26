@@ -1,4 +1,4 @@
-# main.py - LROS Full Backend with Fine-Tuning & A/B Testing
+# main.py - LROS Full Backend with Predictive Alerts & Self-Documentation
 
 from fastapi import FastAPI, HTTPException, Header, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -16,8 +16,10 @@ from bandit import select_pattern, update_bandit, get_bandit_stats, report_to_hu
 from persona import get_persona, update_persona
 from finetune import save_training_pair, get_training_data, get_training_stats, generate_openai_format, generate_deepseek_format
 from ab_testing import get_variant, record_conversion, get_test_results, get_all_tests, create_test
+from predictive import check_alerts, get_active_alerts, record_performance_metric, get_performance_trend
+from documentation import generate_all_docs, generate_daily_summary, generate_compliance_report, generate_evolution_report
 
-app = FastAPI(title="LROS Constitutional Backend")
+app = FastAPI(title="LROS Constitutional Backend with Predictive Alerts")
 
 app.add_middleware(
     CORSMiddleware,
@@ -87,9 +89,10 @@ async def call_deepseek(messages):
 @app.get("/")
 async def root():
     return {
-        "message": "LROS Constitutional Backend with Fine-Tuning & A/B Testing",
+        "message": "LROS Constitutional Backend with Predictive Alerts",
         "patterns": get_pattern_list(),
-        "bandit_active": True
+        "bandit_active": True,
+        "alerts_active": True
     }
 
 @app.get("/health")
@@ -150,13 +153,55 @@ async def ab_create(test_name: str, variant_a: str, variant_b: str, traffic_spli
 
 @app.post("/api/ab/record-exposure")
 async def ab_record_exposure(request: ABExposureRequest):
-    # This is tracked in get_variant, so just return
     return {"status": "ok"}
 
 @app.post("/api/ab/record-conversion")
 async def ab_record_conversion(request: ABExposureRequest):
     result = record_conversion(request.test_name, request.variant)
     return {"status": "ok" if result else "error"}
+
+# ========== PREDICTIVE ALERTS ENDPOINTS ==========
+
+@app.get("/api/alerts")
+async def get_alerts():
+    """Get all active alerts"""
+    return {"alerts": get_active_alerts()}
+
+@app.get("/api/performance/trend")
+async def performance_trend(metric: str = "avg_rating", days: int = 7):
+    """Get performance trend for a metric"""
+    return get_performance_trend(metric, days)
+
+@app.post("/api/docs/generate")
+async def generate_docs(x_api_key: str = Header(...)):
+    """Generate all documentation (admin only)"""
+    if x_api_key != ADMIN_API_KEY:
+        raise HTTPException(status_code=403, detail="Invalid API key")
+    result = generate_all_docs()
+    return {"status": "ok", "files": result}
+
+@app.get("/api/docs/daily")
+async def get_daily_docs():
+    """Get daily summary"""
+    return {"summary": generate_daily_summary()}
+
+@app.get("/api/docs/compliance")
+async def get_compliance_report():
+    """Get compliance report"""
+    return {"report": generate_compliance_report()}
+
+@app.get("/api/docs/evolution")
+async def get_evolution_report():
+    """Get evolution report"""
+    return {"report": generate_evolution_report()}
+
+@app.get("/api/alerts/check")
+async def check_system_alerts():
+    """Check for new alerts"""
+    alerts = check_alerts()
+    return {"alerts": alerts}
+
+# ========== CHAT ENDPOINTS ==========
 
 @app.post("/api/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
@@ -241,6 +286,9 @@ async def feedback(request: FeedbackRequest):
         
         # Record A/B conversion if in a test
         record_conversion("pattern_test", request.pattern_used)
+        
+        # Track performance metric for predictive alerts
+        record_performance_metric("avg_rating", request.rating)
     
     return {"status": "ok" if success else "error"}
 
@@ -248,6 +296,11 @@ async def feedback(request: FeedbackRequest):
 async def implicit_feedback(request: ImplicitFeedbackRequest):
     """Track implicit feedback (dwell time, copy, etc.)"""
     print(f"Implicit: {request.user_id} - {request.action} - {request.duration}ms")
+    
+    # Track as performance metric if it's a positive signal
+    if request.action == "copy" or request.action == "share":
+        record_performance_metric("positive_action", 1)
+    
     return {"status": "ok"}
 
 @app.post("/api/evolution/dry")
