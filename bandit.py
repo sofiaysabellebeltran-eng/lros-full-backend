@@ -1,9 +1,10 @@
-# bandit.py - Multi-armed bandit for pattern selection
+# bandit.py - Multi-armed bandit for pattern selection with Swarm Reporting
 
 import json
 import os
 import random
 from datetime import datetime
+import httpx
 
 BANDIT_FILE = "bandit_data.json"
 
@@ -69,3 +70,40 @@ def get_bandit_stats():
         "exploration_rate": data["exploration_rate"],
         "total_pulls": data["total_pulls"]
     }
+
+async def report_to_hub():
+    """Send bandit stats to swarm hub"""
+    SWARM_HUB_URL = os.getenv("SWARM_HUB_URL", "")
+    if not SWARM_HUB_URL:
+        print("No SWARM_HUB_URL set, skipping report")
+        return
+    
+    data = load_bandit_data()
+    patterns_list = []
+    for name, stats in data["patterns"].items():
+        patterns_list.append({
+            "pattern": name,
+            "pulls": stats["pulls"],
+            "rewards": stats["rewards"],
+            "avg_reward": stats["avg_reward"]
+        })
+    
+    report = {
+        "instance_id": "lros-voice-1",
+        "patterns": patterns_list,
+        "total_pulls": data["total_pulls"],
+        "timestamp": datetime.utcnow().isoformat()
+    }
+    
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(f"{SWARM_HUB_URL}/api/report", json=report)
+            if response.status_code == 200:
+                print(f"Reported to swarm hub: {data['total_pulls']} total pulls")
+                return True
+            else:
+                print(f"Failed to report: {response.status_code}")
+                return False
+    except Exception as e:
+        print(f"Failed to report to hub: {e}")
+        return False
