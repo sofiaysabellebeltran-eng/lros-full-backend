@@ -52,11 +52,9 @@ def update_persona(user_id, rating, pattern_used):
     persona["interactions"] += 1
     persona["last_seen"] = datetime.utcnow().isoformat()
     
-    # Update average rating
     total_rating = persona["avg_rating"] * (persona["interactions"] - 1) + rating
     persona["avg_rating"] = total_rating / persona["interactions"]
     
-    # Determine persona type based on patterns used
     if persona["avg_rating"] > 0.7:
         persona["type"] = "power_user"
     elif persona["avg_rating"] > 0.4:
@@ -64,7 +62,6 @@ def update_persona(user_id, rating, pattern_used):
     else:
         persona["type"] = "explorer"
     
-    # Update preferred pattern if this one performed well
     if rating > 0:
         persona["preferred_pattern"] = pattern_used
     
