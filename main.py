@@ -1,6 +1,6 @@
-# main.py - LROS Full Backend with All Features (Bandit, Persona, Fine-Tuning, A/B Testing, Governance, Robot Control)
+# main.py - LROS Full Backend with Robot Control
 
-from fastapi import FastAPI, HTTPException, Header, Query
+from fastapi import FastAPI, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import os
@@ -26,11 +26,11 @@ from governance import (
 )
 from robot_abstraction import (
     register_robot, execute_command, get_fleet_stats, 
-    simulate_robot, RobotCommand, RobotType
+    simulate_robot
 )
 from robot_safety import check_safety, log_safety_violation, get_safety_summary
 
-app = FastAPI(title="LROS Constitutional Backend")
+app = FastAPI(title="LROS Constitutional Backend with Robot Control")
 
 app.add_middleware(
     CORSMiddleware,
@@ -100,7 +100,7 @@ async def call_deepseek(messages):
 @app.get("/")
 async def root():
     return {
-        "message": "LROS Constitutional Backend",
+        "message": "LROS Constitutional Backend with Robot Control",
         "patterns": get_pattern_list(),
         "bandit_active": True,
         "governance_active": True,
@@ -273,7 +273,6 @@ async def robot_register(robot_id: str, robot_type: str, x_api_key: str = Header
 
 @app.post("/api/robot/command")
 async def robot_command(robot_id: str, command: str, params: str = None):
-    """Send command to robot (with safety checks)"""
     import json
     params_dict = json.loads(params) if params else {}
     
@@ -307,7 +306,6 @@ async def robot_safety_summary():
 
 @app.post("/api/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
-    # Check system operational (governance)
     operational, message = can_process_request()
     if not operational:
         return ChatResponse(
@@ -317,11 +315,8 @@ async def chat(request: ChatRequest):
         )
     
     session_id = request.session_id or str(uuid.uuid4())
-    
-    # Get user persona
     persona = get_persona(request.user_id)
     
-    # A/B Testing for pattern selection
     ab_variant = None
     
     if request.pattern == "auto":
@@ -337,7 +332,6 @@ async def chat(request: ChatRequest):
     else:
         pattern = request.pattern
     
-    # Constitutional check with breach recording
     if is_meta_question(request.message):
         record_constitutional_breach(request.message, request.user_id)
         response_text = get_constitutional_response()
