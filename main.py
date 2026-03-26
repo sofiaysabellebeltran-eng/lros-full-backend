@@ -1,4 +1,4 @@
-# main.py - LROS Full Backend with Multi-Armed Bandit
+# main.py - LROS Full Backend with Multi-Armed Bandit and Swarm Reporting
 
 from fastapi import FastAPI, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
@@ -13,7 +13,7 @@ from constitution import is_meta_question, get_constitutional_response
 from audit import log_interaction, update_feedback
 from pattern_manager import get_pattern, get_pattern_list
 from evolution_engine import run_evolution_dry
-from bandit import select_pattern, update_bandit, get_bandit_stats
+from bandit import select_pattern, update_bandit, get_bandit_stats, report_to_hub
 
 app = FastAPI(title="LROS Constitutional Backend with Bandit")
 
@@ -30,20 +30,20 @@ app.add_middleware(
 
 class ChatRequest(BaseModel):
     message: str
-    pattern: str = "single"  # can be "single", "chain", "parallel", or "auto"
+    pattern: str = "single"
     model: str = "deepseek"
     session_id: str = None
 
 class ChatResponse(BaseModel):
     response: str
     row_index: int = None
-    pattern_used: str = None  # Track which pattern was actually used
+    pattern_used: str = None
 
 class FeedbackRequest(BaseModel):
     row_index: int
-    rating: int  # 1 for good, -1 for bad
+    rating: int
     feedback_text: str = ""
-    pattern_used: str = None  # Pattern that was used for this response
+    pattern_used: str = None
 
 # ========== API KEYS ==========
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
@@ -84,27 +84,21 @@ async def health():
 
 @app.get("/api/patterns")
 async def get_patterns():
-    """Get list of available patterns"""
     return {"patterns": get_pattern_list()}
 
 @app.get("/api/bandit/stats")
 async def bandit_stats():
-    """Get bandit statistics"""
     return get_bandit_stats()
 
 @app.post("/api/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
-    # Generate session ID if not provided
     session_id = request.session_id or str(uuid.uuid4())
     
-    # ========== PATTERN SELECTION ==========
-    # If user selected "auto", let bandit decide
     if request.pattern == "auto":
         pattern = select_pattern()
     else:
         pattern = request.pattern
     
-    # ========== CONSTITUTIONAL CHECK ==========
     if is_meta_question(request.message):
         response_text = get_constitutional_response()
         row_index = log_interaction(
@@ -113,23 +107,19 @@ async def chat(request: ChatRequest):
         )
         return ChatResponse(response=response_text, row_index=row_index, pattern_used=pattern)
     
-    # ========== GET PATTERN CONFIGURATION ==========
     pattern_config = get_pattern(pattern)
     
-    # ========== BUILD MESSAGES ==========
     messages = [
         {"role": "system", "content": pattern_config["system_prompt"]},
         {"role": "user", "content": request.message}
     ]
     
-    # ========== CALL AI ==========
     try:
         if request.model == "deepseek" and DEEPSEEK_API_KEY:
             ai_response = await call_deepseek(messages)
         else:
             ai_response = f"Model {request.model} not configured."
         
-        # Log interaction
         row_index = log_interaction(
             session_id, request.message, pattern,
             request.model, ai_response
@@ -151,13 +141,9 @@ async def chat(request: ChatRequest):
 
 @app.post("/api/feedback")
 async def feedback(request: FeedbackRequest):
-    """Submit feedback for a previous response"""
-    # Update audit log with rating
     success = update_feedback(request.row_index, request.rating, request.feedback_text)
     
-    # Update bandit with feedback (1 for good, 0 for bad)
     if request.pattern_used:
-        # Convert rating: 1 = good, -1 = bad
         reward = 1 if request.rating == 1 else 0
         update_bandit(request.pattern_used, reward)
     
@@ -165,7 +151,6 @@ async def feedback(request: FeedbackRequest):
 
 @app.post("/api/evolution/dry")
 async def evolution_dry(x_api_key: str = Header(...)):
-    """Run dry run evolution"""
     if x_api_key != EVOLUTION_API_KEY:
         raise HTTPException(status_code=403, detail="Invalid API key")
     result = run_evolution_dry()
@@ -173,7 +158,6 @@ async def evolution_dry(x_api_key: str = Header(...)):
 
 @app.get("/api/bandit/reset")
 async def reset_bandit(x_api_key: str = Header(...)):
-    """Reset bandit data (admin only)"""
     if x_api_key != ADMIN_API_KEY:
         raise HTTPException(status_code=403, detail="Invalid API key")
     
@@ -187,3 +171,12 @@ async def reset_bandit(x_api_key: str = Header(...)):
     data["total_pulls"] = 0
     save_bandit_data(data)
     return {"status": "reset", "data": data}
+
+@app.post("/api/report-to-hub")
+async def trigger_report():
+    """Manually trigger reporting to swarm hub"""
+    result = await report_to_hub()
+    if result:
+        return {"status": "ok", "message": "Report sent to swarm hub"}
+    else:
+        return {"status": "error", "message": "Failed to send report"}
